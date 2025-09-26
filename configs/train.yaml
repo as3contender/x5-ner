@@ -1,0 +1,25 @@
+model_name: xlm-roberta-base
+use_crf: true
+max_seq_len: 160
+train_path: data/train.csv
+val_path: data/val.csv
+val_split: 0.1
+epochs: 3
+batch_size: 12
+learning_rate: 3e-5
+output_dir: artifacts/ner-checkpoint
+
+gradient_checkpointing: true
+logging_steps: 100
+eval_steps: 800
+save_steps: 800
+save_total_limit: 2
+dataloader_num_workers: 2
+
+# simple, length-preserving text noise for train-time augs
+augment:
+  enable: true
+  prob: 0.30          # chance to apply augmentation to a training sample
+  typo_prob: 0.25     # replace a char with a neighbor on keyboard
+  homoglyph_prob: 0.25 # Cyrillic/Latin look-alike swap (length-preserving)
+  space_punct_prob: 0.15 # swap space<->hyphen/dot between words (1 char)
