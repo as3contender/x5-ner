@@ -14,3 +14,12 @@ gold: [(0, 8, 'B-TYPE'), (9, 12, 'I-TYPE'), (13, 17, 'I-TYPE')]
 raw: [('B-TYPE', 0, 8)]
 pp : [(0, 8, 'B-TYPE')]
 NOT OK
+
+хмели сун;[(0, 5, 'B-BRAND'), (6, 9, 'I-BRAND')]
+- TYPE
+
+му му;[(0, 2, 'B-TYPE'), (3, 5, 'I-TYPE')]
+-BRAND
+
+с гарнира;[(0, 1, 'O'), (2, 9, 'B-TYPE')]
+c - O

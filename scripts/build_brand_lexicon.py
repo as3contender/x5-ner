@@ -4,7 +4,7 @@ import ast, re, sys
 from collections import Counter
 from pathlib import Path
 
-SRC_FILES = ["data/train.csv", "data/val.csv"]
+SRC_FILES = ["data/train.csv", "data/val.csv", "data/test_with_submission.csv"]
 OUT_PATH = Path("artifacts/brand_lexicon.txt")
 MIN_LEN = 3
 MAX_LEN = 30

@@ -206,10 +206,12 @@ class NERPipeline:
             p_B_BRAND = float(p[label2id["B-BRAND"]]) if "B-BRAND" in label2id else 0.0
             p_I_BRAND = float(p[label2id["I-BRAND"]]) if "I-BRAND" in label2id else 0.0
             p_brand = max(p_B_BRAND, p_I_BRAND)
+            p_brand_sum = p_B_BRAND + p_I_BRAND
 
             p_B_TYPE = float(p[label2id["B-TYPE"]]) if "B-TYPE" in label2id else 0.0
             p_I_TYPE = float(p[label2id["I-TYPE"]]) if "I-TYPE" in label2id else 0.0
-            p_type = max(p_B_TYPE, p_I_TYPE) + 0.1  # +0.05 to avoid tie
+            p_type = max(p_B_TYPE, p_I_TYPE)
+            p_type_sum = p_B_TYPE + p_I_TYPE
 
             tok_norm = _normalize_token(token_text)
             in_lex = _lex_norm(token_text) in BRAND_LEXICON
@@ -224,9 +226,38 @@ class NERPipeline:
             short_lat = pure_lat and (len(tok_norm) <= 2)
             has_vowel = _has_vowel_latin(tok_norm)
 
+            log_lines.append(f"[wid={wid}] p_brand: {p_brand:.3f}, p_type: {p_type:.3f}, p_O: {p_O:.3f}")
+            log_lines.append(
+                f"[wid={wid}] p_brand_sum: {p_brand_sum:.3f}, p_type_sum: {p_type_sum:.3f}, p_O: {p_O:.3f}"
+            )
+
+            # 0) Если текст короче 2 символов - отдаем O
+            if len(tok_norm) <= 2 and p_type < 0.4 and p_brand < 0.4:
+                lab = "O"
+                reason = "short_text"
+                break
+
+            # 0) Сильная уверенноть - отдаем приоритер ответу модели
+            reason = ""
+            for threshold in [0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55]:
+                if p_brand_sum >= threshold * 1.3 or p_brand > threshold:
+                    lab = "I-BRAND" if prev_lab.endswith("BRAND") else "B-BRAND"
+                    reason = f"strong_brand_{threshold}"
+                    break
+                elif p_type_sum >= threshold * 1.3 or p_type > threshold:
+                    lab = "I-TYPE" if prev_lab.endswith("TYPE") else "B-TYPE"
+                    reason = f"strong_type_{threshold}"
+                    break
+                elif p_O >= threshold:
+                    lab = "O"
+                    reason = f"strong_o_{threshold}"
+                    break
+
             # ---- приоритет отрицаний ----
             # 0) короткая чистая латиница не из лексикона — не брендируем никогда
-            if short_lat and (not in_lex) and (not fuzzy_hit):
+            if reason != "":
+                pass
+            elif short_lat and (not in_lex) and (not fuzzy_hit):
                 lab = "O"
                 reason = "short_lat_no_lex"
 

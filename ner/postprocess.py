@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List, Tuple, Set
 import regex as re
 import os
 
@@ -41,6 +41,72 @@ RE_MULTIPACK = re.compile(
 # --- helper: detect numeric-only text (e.g., "3", "3,2", "  3.2  ") ---
 RE_NUMERIC_ONLY = re.compile(r"^\s*\d+(?:[.,]\d+)?\s*$")
 
+# --------- Предлоги для замены сущностей после них ---------
+DEFAULT_PREPOSITIONS = {
+    # Simple and common Russian prepositions (lowercase)
+    "в",
+    "во",
+    "на",
+    "к",
+    "ко",
+    "от",
+    "до",
+    "из",
+    "изо",
+    "с",
+    "со",
+    "у",
+    "за",
+    "для",
+    "по",
+    "о",
+    "об",
+    "обо",
+    "при",
+    "через",
+    "над",
+    "под",
+    "перед",
+    "между",
+    "про",
+    "без",
+    "около",
+    "вокруг",
+    "после",
+    "среди",
+    "вне",
+    "кроме",
+    "ради",
+    "согласно",
+    "насчёт",
+    "насчет",
+    "вместо",
+    "вроде",
+    "наперекор",
+    "вопреки",
+    "сквозь",
+    "путём",
+    "путем",
+    "благодаря",
+    "из-за",
+    "изза",
+    "из-под",
+    "изпод",
+    "вслед",
+    "навстречу",
+    "мимо",
+    "вдоль",
+    "поперёк",
+    "поперек",
+    "вглубь",
+    "вширь",
+    "вокрест",
+    "попросту",
+    "доя",
+    "мытья",
+    "дл",
+}
+
 
 def _span_is_numeric(text: str, s: int, e: int) -> bool:
     s -= 1
@@ -70,6 +136,43 @@ def _only_separators(text: str, s: int, e: int) -> bool:
         return True
     # if there's any letter or digit between spans, they're not adjacent
     return re.search(r"[\p{L}\p{N}]", text[s:e]) is None
+
+
+def normalize_token(text: str) -> str:
+    """Нормализует токен для сравнения с предлогами."""
+    return text.strip().strip("\t\r\n .,!?:;\"'«»()[]{}-—").lower()
+
+
+def replace_after_prepositions(
+    text: str, entities: List[Tuple[int, int, str]], prepositions: Set[str] = None
+) -> List[Tuple[int, int, str]]:
+    """
+    Заменяет сущности, которые идут сразу после предлогов или слова "все", на 'O'.
+    Если сущность имеет метку 'O' и является предлогом или словом "все", то следующая сущность также становится 'O'.
+    """
+    if not entities:
+        return entities
+
+    if prepositions is None:
+        prepositions = DEFAULT_PREPOSITIONS
+
+    # Добавляем "все" к списку слов, которые зануляют следующую сущность
+    words_to_zero_next = prepositions | {"все"}
+
+    # Work on a mutable copy
+    mutable: List[List[object]] = [[a, b, c] for (a, b, c) in entities]
+    i = 0
+    while i < len(mutable) - 1:
+        start, end, label = mutable[i]
+        if label == "O":
+            token_text = text[start:end]
+            if normalize_token(token_text) in words_to_zero_next:
+                # Set the next segment label to 'O'
+                nxt = mutable[i + 1]
+                nxt[2] = "O"
+                # Note: we only change the immediate next segment, as requested
+        i += 1
+    return [(int(a), int(b), str(c)) for (a, b, c) in mutable]
 
 
 def stitch_consecutive_B_to_I(text: str, entities: List[Tuple[int, int, str]]) -> List[Tuple[int, int, str]]:
@@ -367,6 +470,7 @@ def postprocess_all(
     *,
     do_split_type: bool = True,
     do_boost_numeric: bool = True,
+    do_replace_after_prepositions: bool = True,
     brand_thresh: float = 0.85,
 ) -> List[Tuple[int, int, str]]:
     """
@@ -374,7 +478,8 @@ def postprocess_all(
       1) (опц.) расширяем TYPE вправо (до 2 слов),
       2) (опц.) дробим TYPE по словам,
       3) (опц.) добавляем проценты/объёмы по регуляркам,
-      4) сортируем и дедупим.
+      4) (опц.) заменяем сущности после предлогов и слова "все" на 'O',
+      5) сортируем и дедупим.
     """
     out = entities
     if do_split_type:
@@ -397,6 +502,10 @@ def postprocess_all(
     # Normalize BIO for consecutive TYPE/BRAND chunks: B-... B-... -> B-... I-...
     out = stitch_consecutive_B_to_I(text, out)
     # out = merge_across_joiners(text, out)
+
+    # Replace entities after prepositions with 'O'
+    if do_replace_after_prepositions:
+        out = replace_after_prepositions(text, out)
 
     out = formatted_out(out)
 
@@ -437,6 +546,6 @@ if __name__ == "__main__":
     ents = [(0, 3, "B-TYPE"), (4, 14, "B-TYPE")]
     # add_ents = [(0, 6, "B-TYPE"), (7, 10, "B-PERCENT")]
     # _merge_and_dedup_entities("молоко 3,2", base_ents, add_ents)
-    print(postprocess_all(text, ents, do_boost_numeric=True, do_split_type=True))
+    print(postprocess_all(text, ents, do_boost_numeric=True, do_split_type=True, do_replace_after_prepositions=True))
 
 # end region: brand lexicon

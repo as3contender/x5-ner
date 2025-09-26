@@ -114,3 +114,15 @@ sample: ягодное лукошко
 вд питьея;[(0, 2, 'B-BRAND'), (3, 9, 'B-TYPE')]
 
 TYPE
+
+
+коробка ам нямы;[(0, 7, 'B-TYPE'), (8, 10, 'O'), (11, 15, 'B-BRAND')]
+ам нямы - O
+
+bgr - ?
+chi - ?
+cmo - ?
+
+de0licat;[(0, 8, 'B-TYPE')];8;8;8;0 - BRAND
+
+fish;[(0, 4, 'B-TYPE')] - BRAND
