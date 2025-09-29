@@ -73,7 +73,9 @@ def token_close_to_lexicon(tok: str, lex_set: set, max_ed_small=1, max_ed_big=2)
 
 
 # regex-шаблоны
-RE_PERCENT_SIGN = re.compile(r"(?<!\d)\d{1,2}(?:[.,]\d)?\s*%")
+# проценты: допускаем пробелы вокруг разделителя и до 2 знаков после запятой/точки
+# примеры: 1%, 1 %, 1,5%, 1 ,5 %, 10.25 %
+RE_PERCENT_SIGN = re.compile(r"(?<!\d)\d{1,2}(?:\s*[.,]\s*\d{1,2})?\s*%")
 RE_PERCENT_WORD = re.compile(r"\b\d{1,2}(?:[.,]\d)?\s*(?:проц|процент(?:а|ов)?)\b", re.IGNORECASE)
 UNITS = ["мл", "ml", "l", "л", "г", "гр", "kg", "кг", "шт", "уп", "пак", "ш", "к", "литров", "литровый", "литра"]
 RE_VOLUME = re.compile(rf"\b\d+(?:[.,]\d+)?\s*(?:{'|'.join(UNITS)})\b", re.IGNORECASE)
@@ -84,9 +86,19 @@ RE_MULTIPACK = re.compile(rf"\b\d+\s*[x×*]\s*\d+(?:[.,]\d+)?\s*(?:{'|'.join(UNI
 
 # --- Word-number volumes like "пять литров", "две упаковки", "полтора литра", "пол-литра" ---
 UNIT_WORDS = [
-    r"литр(?:а|ов)?", r"миллилитр(?:а|ов)?", r"килограмм(?:а|ов)?", r"грамм(?:а|ов)?",
-    r"бутылк(?:а|и|ок)", r"банк(?:а|и|ок)", r"пакет(?:а|ов)?", r"упаковк(?:а|и|ок)",
-    r"рулон(?:а|ов)?", r"лист(?:а|ов)?", r"флакон(?:а|ов)?", r"штук(?:а|и|)?", r"шт"
+    r"литр(?:а|ов)?",
+    r"миллилитр(?:а|ов)?",
+    r"килограмм(?:а|ов)?",
+    r"грамм(?:а|ов)?",
+    r"бутылк(?:а|и|ок)",
+    r"банк(?:а|и|ок)",
+    r"пакет(?:а|ов)?",
+    r"упаковк(?:а|и|ок)",
+    r"рулон(?:а|ов)?",
+    r"лист(?:а|ов)?",
+    r"флакон(?:а|ов)?",
+    r"штук(?:а|и|)?",
+    r"шт",
 ]
 # simple numerals 1..19 + tens (20..90) with feminine forms (две/одна)
 ONE_WORD = r"(?:один|одна|одно)"
@@ -104,23 +116,13 @@ POLTORA = r"(?:полтор(?:а|ы))"
 # --- Word-number percents like "пять процентов", "один процент", "полпроцента" ---
 ZERO_WORD = r"(?:ноль)"
 PERC_WORD_FORMS = r"(?:процент(?:а|ов)?|проц\.?|проц)"
-RE_WORD_PERCENT = re.compile(
-    rf"\b(?:{ZERO_WORD}|{NUM_WORD})\s+{PERC_WORD_FORMS}\b",
-    re.IGNORECASE
-)
+RE_WORD_PERCENT = re.compile(rf"\b(?:{ZERO_WORD}|{NUM_WORD})\s+{PERC_WORD_FORMS}\b", re.IGNORECASE)
 # "пол процента" / "полпроцента" (редко встречается, но поддержим)
-RE_HALF_PERCENT = re.compile(
-    rf"\b{HALF_NUM}?{PERC_WORD_FORMS}\b",
-    re.IGNORECASE
-)
+RE_HALF_PERCENT = re.compile(rf"\b{HALF_NUM}?{PERC_WORD_FORMS}\b", re.IGNORECASE)
 
-RE_WORD_VOLUME = re.compile(
-    rf"\b({NUM_WORD})\s+({'|'.join(UNIT_WORDS)})\b",
-    re.IGNORECASE
-)
+RE_WORD_VOLUME = re.compile(rf"\b({NUM_WORD})\s+({'|'.join(UNIT_WORDS)})\b", re.IGNORECASE)
 RE_HALF_VOLUME = re.compile(
-    rf"\b(?:{HALF_NUM}({'|'.join(UNIT_WORDS)})|{POLTORA}\s+({'|'.join(UNIT_WORDS)}))\b",
-    re.IGNORECASE
+    rf"\b(?:{HALF_NUM}({'|'.join(UNIT_WORDS)})|{POLTORA}\s+({'|'.join(UNIT_WORDS)}))\b", re.IGNORECASE
 )
 
 
@@ -177,6 +179,31 @@ def extract_explicit_numeric(text: str):
         ents.append((m.start(), m.end(), "B-VOLUME"))
     # word-number based volumes
     ents.extend(extract_word_number_volume(text))
+
+    # adjective+noun phrases like "большой объем" -> treat as VOLUME (B-/I- across tokens)
+    # Handles variants: "большая/большое/большие", typos like "обьем", and "объём".
+    tokens = [(m.group(0), m.start(), m.end()) for m in WORD_RE.finditer(text)]
+    norm_tokens = [normalize_token(t) for t, _, _ in tokens]
+
+    def _is_size_adj(t: str) -> bool:
+        # catch "больш*" (большой/ая/ое/ие, больший/е и пр.) and "огромн*"
+        return t.startswith("больш") or t.startswith("огромн")
+
+    def _is_volume_noun(t: str) -> bool:
+        # normalize covers ё->е, so "объём" -> "объем"; accept common typo "обьем"
+        return t.startswith("объем") or t.startswith("обьем")
+
+    for i in range(len(tokens) - 1):
+        t1 = norm_tokens[i]
+        t2 = norm_tokens[i + 1]
+        if not t1 or not t2:
+            continue
+        if _is_size_adj(t1) and _is_volume_noun(t2):
+            s1, e1 = tokens[i][1], tokens[i][2]
+            s2, e2 = tokens[i + 1][1], tokens[i + 1][2]
+            ents.append((s1, e1, "B-VOLUME"))
+            ents.append((s2, e2, "I-VOLUME"))
+
     return sorted(ents)
 
 
@@ -192,6 +219,7 @@ def extract_word_number_volume(text: str):
 
 
 PACK_WORDS = {normalize_token(w) for w in ["бутыл", "банка", "пакет", "упаков", "рулон", "лист", "пачк", "флакон"]}
+SIZE_WORDS = {normalize_token(w) for w in ["размер"]}
 
 
 def infer_implicit_numeric(text: str, fatty_words=FATTY_WORDS):
@@ -228,6 +256,9 @@ def infer_implicit_numeric(text: str, fatty_words=FATTY_WORDS):
         except:
             continue
         neigh = neighbors((s + e) // 2)
+        # guard: 'размер 5' and similar size patterns are NOT percent/volume
+        if any(w in SIZE_WORDS for w in neigh):
+            continue
         # check fatty/pack context with fuzzy tolerance
         has_fatty = any(token_close_to_lexicon(w, fatty_words) for w in neigh)
         has_pack = any(token_close_to_lexicon(w, PACK_WORDS) for w in neigh)
@@ -417,13 +448,15 @@ if __name__ == "__main__":
         "пакеты 60 л",
     ]
 
-    test_cases_volume.extend([
-        "вода пять литров",
-        "вода две упаковки",
-        "сахар пол килограмма",
-        "масло пол-литра",
-        "молоко полтора литра",
-    ])
+    test_cases_volume.extend(
+        [
+            "вода пять литров",
+            "вода две упаковки",
+            "сахар пол килограмма",
+            "масло пол-литра",
+            "молоко полтора литра",
+        ]
+    )
 
     # Добавим тесты на проценты словами
     test_cases += [

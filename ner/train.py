@@ -23,8 +23,8 @@ from transformers import (
 )
 from seqeval.metrics import f1_score, classification_report
 
-from .utils import BIO_TAGS, id2label, label2id, set_seed
-from .dataset import read_train, encode_with_alignment
+from ner.utils import BIO_TAGS, id2label, label2id, set_seed
+from ner.dataset import read_train, encode_with_alignment
 from seqeval.metrics.sequence_labeling import get_entities
 
 

@@ -464,6 +464,39 @@ def formatted_out(out: List[Tuple[int, int, str]]) -> List[Tuple[int, int, str]]
     return [(s, e, t) for (s, e, t) in out]
 
 
+def zeroize_percent_after_size(text: str, entities: List[Tuple[int, int, str]]):
+    """
+    Turn PERCENT spans to 'O' for patterns like "размер 5" (size, not percent).
+    Heuristic: find "размер <digits>" and zero any overlapping PERCENT spans
+    that do not contain '%' in the underlying text segment.
+    """
+    if not entities:
+        return entities
+    # find numeric positions after the word 'размер'
+    size_num_spans: List[Tuple[int, int]] = []
+    for m in re.finditer(r"\bразмер\b\s*(\d+)\b", text, re.IGNORECASE | re.U):
+        size_num_spans.append(m.span(1))  # span of the digits subgroup
+
+    if not size_num_spans:
+        return entities
+
+    def overlaps_num(s: int, e: int) -> bool:
+        for ss, ee in size_num_spans:
+            if ss < e and ee > s:
+                return True
+        return False
+
+    out: List[Tuple[int, int, str]] = []
+    for s, e, t in entities:
+        if t.endswith("PERCENT") and overlaps_num(s, e):
+            seg = text[s:e]
+            if "%" not in seg:
+                out.append((s, e, "O"))
+                continue
+        out.append((s, e, t))
+    return out
+
+
 def postprocess_all(
     text: str,
     entities: List[Tuple[int, int, str]],
@@ -502,6 +535,9 @@ def postprocess_all(
     # Normalize BIO for consecutive TYPE/BRAND chunks: B-... B-... -> B-... I-...
     out = stitch_consecutive_B_to_I(text, out)
     # out = merge_across_joiners(text, out)
+
+    # Zeroize false PERCENT like "размер 5" (sizes) -> O
+    out = zeroize_percent_after_size(text, out)
 
     # Replace entities after prepositions with 'O'
     if do_replace_after_prepositions:

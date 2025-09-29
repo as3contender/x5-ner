@@ -1,7 +1,7 @@
 model_name: xlm-roberta-base
 use_crf: true
 max_seq_len: 160
-train_path: data/train.csv
+train_path: data/train_with_submition.csv
 val_path: data/val.csv
 val_split: 0.1
 epochs: 3

@@ -72,6 +72,66 @@ BRAND_LEXICON = load_brand_lexicon()
 BRAND_LEXICON_LIST = list(BRAND_LEXICON) if BRAND_LEXICON else []
 
 
+def _levenshtein_distance_with_cutoff(a: str, b: str, max_distance: int = 2) -> int:
+    """Compute Levenshtein distance with a simple early cutoff.
+    Returns a value > max_distance if the distance exceeds the cutoff.
+    """
+    # Quick length-based pruning
+    la, lb = len(a), len(b)
+    if abs(la - lb) > max_distance:
+        return max_distance + 1
+    if a == b:
+        return 0
+    if la == 0 or lb == 0:
+        return la + lb
+
+    # Ensure a is the longer string to slightly reduce allocations
+    if la < lb:
+        a, b = b, a
+        la, lb = lb, la
+
+    prev = list(range(lb + 1))
+    cur = [0] * (lb + 1)
+    for i in range(1, la + 1):
+        cur[0] = i
+        ai = a[i - 1]
+        # Track minimum in row for early cutoff
+        min_in_row = cur[0]
+        for j in range(1, lb + 1):
+            cost = 0 if ai == b[j - 1] else 1
+            deletion = prev[j] + 1
+            insertion = cur[j - 1] + 1
+            substitution = prev[j - 1] + cost
+            val = deletion if deletion < insertion else insertion
+            if substitution < val:
+                val = substitution
+            cur[j] = val
+            if val < min_in_row:
+                min_in_row = val
+        if min_in_row > max_distance:
+            return max_distance + 1
+        prev, cur = cur, prev
+    dist = prev[lb]
+    return dist
+
+
+def _lexicon_levenshtein_hit(term: str, lexicon_list: list, max_distance: int) -> bool:
+    """Return True if any lexicon item within Levenshtein max_distance of term.
+    term is expected to be pre-normalized with _lex_norm.
+    """
+    if not term:
+        return False
+    # Small optimization: check by length window
+    tlen = len(term)
+    for cand in lexicon_list:
+        clen = len(cand)
+        if abs(clen - tlen) > max_distance:
+            continue
+        if _levenshtein_distance_with_cutoff(term, cand, max_distance) <= max_distance:
+            return True
+    return False
+
+
 def _is_short_latin(word: str) -> bool:
     w = word.strip()
     return 1 <= len(w) <= 4 and re.fullmatch(r"[A-Za-z]+", w) is not None
@@ -93,10 +153,10 @@ class NERPipeline:
         brand_thresh: float = 0.85,
         entity_thresh: float = 0.55,
         cont_I_thresh: float = 0.50,
-        include_o: bool = True,
         base_label: str = "B-TYPE",
-    ) -> Tuple[List[Dict], str]:
+    ) -> Tuple[List[Dict], str, List[str]]:
         log_lines = []
+        log_details = []
         log_lines.append(
             f"[start] text='{text}' | brand_thresh={brand_thresh} entity_thresh={entity_thresh} cont_I_thresh={cont_I_thresh}"
         )
@@ -214,21 +274,42 @@ class NERPipeline:
             p_type_sum = p_B_TYPE + p_I_TYPE
 
             tok_norm = _normalize_token(token_text)
-            in_lex = _lex_norm(token_text) in BRAND_LEXICON
+            tok_lex_norm = _lex_norm(token_text)
+            in_lex = tok_lex_norm in BRAND_LEXICON
             fuzzy_hit = False
-            if (not in_lex) and rf_process and fuzz and BRAND_LEXICON_LIST:
-                # жёстче предыдущего: короткие слова не фаззим, требуем высокий скор
-                if len(tok_norm) >= 4:
-                    match = rf_process.extractOne(tok_norm, BRAND_LEXICON_LIST, scorer=fuzz.WRatio, score_cutoff=95)
-                    fuzzy_hit = match is not None
+            if not in_lex:
+                # 1) If rapidfuzz available, try high-confidence ratio on lex-normalized token
+                if rf_process and fuzz and BRAND_LEXICON_LIST:
+                    # требуем высокий скор; сравниваем с лексикон-нормой
+                    if len(tok_lex_norm) >= 3:
+                        match = rf_process.extractOne(
+                            tok_lex_norm,
+                            BRAND_LEXICON_LIST,
+                            scorer=fuzz.WRatio,
+                            score_cutoff=90,
+                        )
+                        fuzzy_hit = match is not None
+                # 2) Fallback: pure Python Levenshtein distance
+                if (not fuzzy_hit) and BRAND_LEXICON_LIST:
+                    # немного адаптивный порог: 1 для коротких, 2 для длиннее
+                    max_d = 1 if len(tok_lex_norm) <= 6 else 2
+                    fuzzy_hit = _lexicon_levenshtein_hit(tok_lex_norm, BRAND_LEXICON_LIST, max_d)
 
             pure_lat = _pure_latin(tok_norm)
             short_lat = pure_lat and (len(tok_norm) <= 2)
             has_vowel = _has_vowel_latin(tok_norm)
 
-            log_lines.append(f"[wid={wid}] p_brand: {p_brand:.3f}, p_type: {p_type:.3f}, p_O: {p_O:.3f}")
+            # нужно найти максимальное значение среди p_brand, p_type и p_O и определить какая сущность выигрывает
+            max_prob = max(p_brand, p_type, p_O)
+            if max_prob == p_brand:
+                winning_entity = "BRAND"
+            elif max_prob == p_type:
+                winning_entity = "TYPE"
+            else:
+                winning_entity = "O"
+
             log_lines.append(
-                f"[wid={wid}] p_brand_sum: {p_brand_sum:.3f}, p_type_sum: {p_type_sum:.3f}, p_O: {p_O:.3f}"
+                f"[wid={wid}] ({winning_entity}) p_brand(sum): {p_brand:.3f}({p_brand_sum:.3f}), p_type(sum): {p_type:.3f}({p_type_sum:.3f}), p_O: {p_O:.3f}"
             )
 
             # 0) Если текст короче 2 символов - отдаем O
@@ -291,14 +372,14 @@ class NERPipeline:
                     reason = "lex_conf_too_low"
 
             # 3) чистая латиница вне лексикона — только очень уверенный бренд
-            elif pure_lat and (not in_lex) and (not fuzzy_hit):
-                # нужна гласная, длина>=4 и запас над TYPE
-                if has_vowel and len(tok_norm) >= 4 and p_brand >= max(brand_thresh, p_type + 0.15, 0.80):
-                    lab = "I-BRAND" if prev_lab.endswith("BRAND") else "B-BRAND"
-                    reason = "strong_pure_lat_brand"
-                else:
-                    lab = get_fallback_label(p_type)
-                    reason = "weak_pure_lat"
+            # elif pure_lat and (not in_lex) and (not fuzzy_hit):
+            #     # нужна гласная, длина>=4 и запас над TYPE
+            #     if has_vowel and len(tok_norm) >= 4 and p_brand >= max(brand_thresh, p_type + 0.15, 0.80):
+            #         lab = "I-BRAND" if prev_lab.endswith("BRAND") else "B-BRAND"
+            #         reason = "strong_pure_lat_brand"
+            #     else:
+            #         lab = get_fallback_label(p_type)
+            #         reason = "weak_pure_lat"
 
             # 4) TYPE — только если уверенно выигрывает у BRAND
             elif p_type >= max(entity_thresh, p_brand + 0.07):
@@ -327,17 +408,19 @@ class NERPipeline:
                 f"[decide] wid={wid} span=({s},{e}) '{token_text}' | p_brand={p_brand:.3f} p_type={p_type:.3f} in_lex={in_lex} fuzzy={fuzzy_hit} pureLat={pure_lat} shortLat={short_lat} -> {lab} ({reason})\n"
             )
 
+            log_details.append(
+                f"{text};{token_text};{s};{e};{lab};{reason};{p_brand:.3f};{p_type:.3f};{in_lex};{fuzzy_hit};{pure_lat};{short_lat};{has_vowel};{p_brand_sum:.3f};{p_type_sum:.3f};{p_O:.3f}"
+            )
+
         # ---------- собираем спаны ----------
         spans: List[Dict] = []
         for wid in order:
             lab = labels_word.get(wid, "O")
-            if lab == "O" and not include_o:
-                continue
             s, e = trim_span(*word_span[wid])
             if s < e:
                 spans.append({"start": s, "end": e, "label": lab})
 
-        return spans, "\n".join(log_lines)
+        return spans, "\n".join(log_lines), log_details
 
     # end region predict_bio_tokens
 
@@ -347,18 +430,14 @@ class NERPipeline:
         brand_thresh: float = 0.8,
         entity_thresh: float = 0.55,
         cont_I_thresh: float = 0.35,
-        include_o: bool = False,
-    ) -> Tuple[List[Tuple[int, int, str]], str]:
-        spans, log = self.predict_bio_tokens(
+    ) -> Tuple[List[Tuple[int, int, str]], str, List[str]]:
+        spans, log, log_details = self.predict_bio_tokens(
             text,
             brand_thresh=brand_thresh,
             entity_thresh=entity_thresh,
             cont_I_thresh=cont_I_thresh,
-            include_o=include_o,
         )
         result = []
         for span in spans:
-            if span["label"] == "O" and not include_o:
-                continue
             result.append((span["start"], span["end"], span["label"]))
-        return result, log
+        return result, log, log_details
